@@ -58,7 +58,7 @@ if TEST_SCIPY:
 
 SIZE = 100
 
-AMPERE_OR_ROCM = TEST_WITH_ROCM or tf32_is_not_fp32() 
+AMPERE_OR_ROCM = TEST_WITH_ROCM or tf32_is_not_fp32()
 
 # Wrap base test class into a class to hide it from testing
 # See https://stackoverflow.com/a/25695512
@@ -4781,6 +4781,10 @@ class TestTorchDeviceType(TestCase):
                 if fn_name == 'abs':
                     torch_inplace_method = getattr(torch.Tensor, fn_name + "_")
                     np_fn(a, out=a)
+                    if dtype.is_complex:
+                        with self.assertRaisesRegex(RuntimeError, "In-place abs is not supported for complex tensors."):
+                            torch_inplace_method(t)
+                        return
                     torch_inplace_method(t)
                     self.assertEqual(torch.from_numpy(a), t.cpu())
 
@@ -11659,6 +11663,24 @@ class TestTorchDeviceType(TestCase):
         m2 = torch.tensor([3., 4.], dtype=torch.bfloat16)
         self.assertEqual(m1 + m2, torch.tensor([4., 6.], dtype=torch.bfloat16))
 
+        # different alpha types
+        m1 = torch.tensor([2 + 3j, 4 + 5j], dtype=torch.complex64, device=device)
+        m2 = torch.tensor([4 + 5j, 2 + 3j], dtype=torch.complex64, device=device)
+        # add complex numbers with float alpha
+        res = torch.add(m1, m2, alpha=0.1)
+        expected = torch.tensor([2.4000 + 3.5000j, 4.2000 + 5.3000j], dtype=torch.complex64, device=device)
+        self.assertEqual(res, expected)
+
+        # add complex numbers with complex alpha
+        res = torch.add(m1, m2, alpha=complex(0.1, 0.2))
+        expected = torch.tensor([1.4000 + 4.3000j, 3.6000 + 5.7000j], dtype=torch.complex64, device=device)
+        self.assertEqual(res, expected)
+
+        # add complex numbers with integer alpha
+        res = torch.add(m1, m2, alpha=2)
+        expected = torch.tensor([10. + 13.j, 8. + 11.j], dtype=torch.complex64, device=device)
+        self.assertEqual(res, expected)
+
         # mismatched alpha
         m1 = torch.tensor([1], dtype=torch.int8, device=device)
         m2 = torch.tensor([2], dtype=torch.int8, device=device)
@@ -11668,6 +11690,15 @@ class TestTorchDeviceType(TestCase):
         self.assertRaisesRegex(RuntimeError,
                                r"For integral input tensors, argument alpha must not be a floating point number\.",
                                lambda: torch.add(m1, m2, alpha=1.0))
+
+        # mismatched alpha, float / double tensor and complex alpha
+        m1 = torch.tensor([3., 4.], device=device)
+        m2 = torch.tensor([4., 3.], device=device)
+        self.assertRaises(RuntimeError, lambda: torch.add(m1, m2, alpha=complex(0.1, 0.2)))
+
+        m1 = torch.tensor([3., 4.], dtype=torch.double, device=device)
+        m2 = torch.tensor([4., 3.], dtype=torch.double, device=device)
+        self.assertRaises(RuntimeError, lambda: torch.add(m1, m2, alpha=complex(0.1, 0.2)))
 
         # complex
         m1 = torch.tensor((4.0000 + 4.0000j), dtype=torch.complex64)
@@ -13714,6 +13745,15 @@ class TestTorchDeviceType(TestCase):
                   1 / 3, 1 / 2, 1.0, 3 / 2, 2.0]
         tensor = torch.tensor(floats, dtype=torch.float32, device=device)
         for base in floats:
+            self._test_pow(base, tensor)
+
+    @onlyOnCPUAndCUDA
+    @unittest.skipIf(not TEST_NUMPY, 'Numpy not found')
+    @dtypes(*(torch.testing.get_all_dtypes(include_bool=False, include_bfloat16=False)))
+    def test_complex_scalar_pow_tensor(self, device, dtype):
+        complexes = [0.5j, 1. + 1.j, -1.5j, 2.2 - 1.6j]
+        tensor = torch.rand(100).to(dtype=dtype, device=device)
+        for base in complexes:
             self._test_pow(base, tensor)
 
     @unittest.skipIf(not TEST_NUMPY, 'Numpy not found')
